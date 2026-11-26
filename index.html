@@ -136,6 +136,8 @@ async function loadModel() {
     { accelerator: "wasm" }
   );
 
+  console.log("입력 정보:", model.getInputDetails());
+console.log("출력 정보:", model.getOutputDetails());
   statusText.textContent = "AI 모델 준비 완료!";
 }
 
