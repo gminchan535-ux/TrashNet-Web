@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrashNet AI 분리수거 도우미</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f3f5f7;
+      text-align: center;
+      padding: 20px;
+      margin: 0;
+    }
+
+    .container {
+      max-width: 550px;
+      margin: auto;
+      background: white;
+      padding: 20px;
+      border-radius: 16px;
+    }
+
+    h1 {
+      color: #237a57;
+    }
+
+    video {
+      width: 100%;
+      max-height: 400px;
+      background: #222;
+      border-radius: 12px;
+      object-fit: cover;
+    }
+
+    button {
+      padding: 13px 20px;
+      margin: 8px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    #startBtn {
+      background: #237a57;
+      color: white;
+    }
+
+    #stopBtn {
+      background: #777;
+      color: white;
+    }
+
+    #result {
+      font-size: 25px;
+      font-weight: bold;
+      margin-top: 20px;
+    }
+
+    #status {
+      color: #555;
+      margin: 15px;
+    }
+
+    #score {
+      color: #237a57;
+      font-size: 17px;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <h1>TrashNet AI</h1>
+  <p>AI 기반 쓰레기 이미지 분류 시스템</p>
+
+  <video id="video" autoplay playsinline muted></video>
+
+  <div>
+    <button id="startBtn">카메라 시작</button>
+    <button id="stopBtn">카메라 중지</button>
+  </div>
+
+  <p id="status">카메라 시작 버튼을 눌러 주세요.</p>
+
+  <div id="result">분류 대기 중</div>
+  <p id="score"></p>
+
+</div>
+
+<canvas id="canvas" width="160" height="160" hidden></canvas>
+
+<script type="module">
+
+import {
+  loadLiteRt,
+  loadAndCompile,
+  Tensor
+} from "https://cdn.jsdelivr.net/npm/@litertjs/core/+esm";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const statusText = document.getElementById("status");
+const resultText = document.getElementById("result");
+const scoreText = document.getElementById("score");
+
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+
+const classNames = ["금속", "종이", "플라스틱"];
+
+let model = null;
+let stream = null;
+let running = false;
+let busy = false;
+
+// 모델 불러오기
+async function loadModel() {
+
+  if (model) return;
+
+  statusText.textContent = "AI 모델을 불러오는 중입니다.";
+
+  await loadLiteRt(
+    "https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/"
+  );
+
+  model = await loadAndCompile(
+    "./trashnet_model.tflite",
+    { accelerator: "wasm" }
+  );
+
+  statusText.textContent = "AI 모델 준비 완료!";
+}
+
+// 카메라 시작
+async function startCamera() {
+
+  try {
+
+    await loadModel();
+
+    if (!stream) {
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment"
+        },
+        audio: false
+      });
+
+      video.srcObject = stream;
+      await video.play();
+    }
+
+    running = true;
+    statusText.textContent = "카메라 분석 중입니다.";
+
+    analyzeLoop();
+
+  } catch (error) {
+
+    console.error(error);
+
+    statusText.textContent =
+      "오류: " + error.message;
+
+  }
+}
+
+// 이미지 전처리 및 AI 예측
+async function predict() {
+
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+
+  if (!width || !height) return;
+
+  // 화면 중앙의 정사각형 영역 선택
+  const size = Math.min(width, height);
+  const sx = (width - size) / 2;
+  const sy = (height - size) / 2;
+
+  ctx.drawImage(
+    video,
+    sx, sy, size, size,
+    0, 0, 160, 160
+  );
+
+  const imageData = ctx.getImageData(
+    0, 0, 160, 160
+  ).data;
+
+  // RGB float32 데이터 생성
+  // 모델 내부에 preprocess_input이 포함되어 있음
+  const inputData = new Float32Array(
+    160 * 160 * 3
+  );
+
+  for (let i = 0; i < 160 * 160; i++) {
+
+    inputData[i * 3] = imageData[i * 4];
+    inputData[i * 3 + 1] = imageData[i * 4 + 1];
+    inputData[i * 3 + 2] = imageData[i * 4 + 2];
+
+  }
+
+  const inputTensor = new Tensor(
+    inputData,
+    [1, 160, 160, 3]
+  );
+
+  let outputs = [];
+
+  try {
+
+    outputs = await model.run(inputTensor);
+
+    const predictions = await outputs[0].data();
+
+    let maxIndex = 0;
+
+    for (let i = 1; i < predictions.length; i++) {
+
+      if (predictions[i] > predictions[maxIndex]) {
+        maxIndex = i;
+      }
+
+    }
+
+    resultText.textContent =
+      "분류 결과: " + classNames[maxIndex];
+
+    scoreText.textContent =
+      "모델 출력값: " +
+      Number(predictions[maxIndex]).toFixed(4);
+
+  } finally {
+
+    inputTensor.delete();
+
+    outputs.forEach(tensor => tensor.delete());
+
+  }
+
+}
+
+// 일정 간격으로 반복 분석
+async function analyzeLoop() {
+
+  if (!running || busy) return;
+
+  busy = true;
+
+  try {
+
+    await predict();
+
+  } catch (error) {
+
+    console.error(error);
+    statusText.textContent =
+      "분류 오류: " + error.message;
+
+  } finally {
+
+    busy = false;
+
+  }
+
+  if (running) {
+
+    setTimeout(analyzeLoop, 700);
+
+  }
+
+}
+
+// 카메라 중지
+function stopCamera() {
+
+  running = false;
+
+  if (stream) {
+
+    stream.getTracks().forEach(track => track.stop());
+
+    stream = null;
+    video.srcObject = null;
+
+  }
+
+  statusText.textContent = "카메라가 중지되었습니다.";
+  resultText.textContent = "분류 대기 중";
+  scoreText.textContent = "";
+
+}
+
+startBtn.addEventListener("click", startCamera);
+stopBtn.addEventListener("click", stopCamera);
+
+</script>
+
+</body>
+</html>
