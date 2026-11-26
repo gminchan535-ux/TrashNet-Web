@@ -132,7 +132,7 @@ async function loadModel() {
   );
 
   model = await loadAndCompile(
-    "./trashnet_model.tflite",
+    "./trashnet_model_fixed.tflite",
     { accelerator: "wasm" }
   );
 
